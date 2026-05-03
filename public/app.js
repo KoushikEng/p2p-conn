@@ -22,7 +22,8 @@ let iceCandidatesQueue = [];
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' }
     ]
 };
 
@@ -183,7 +184,7 @@ async function handleOffer(offer) {
         action: 'answer',
         answer: peerConnection.localDescription
     }));
-    
+
     // Process queued candidates
     while (iceCandidatesQueue.length > 0) {
         await peerConnection.addIceCandidate(iceCandidatesQueue.shift());
@@ -193,7 +194,7 @@ async function handleOffer(offer) {
 async function handleAnswer(answer) {
     if (!peerConnection) return;
     await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-    
+
     // Process queued candidates
     while (iceCandidatesQueue.length > 0) {
         await peerConnection.addIceCandidate(iceCandidatesQueue.shift());
