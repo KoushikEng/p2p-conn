@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dark Mirror - P2P Chat</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- Join Screen -->
+        <div id="join-screen" class="screen active">
+            <div class="glass-card">
+                <h1>Secure P2P Chat</h1>
+                <p>End-to-end encrypted WebRTC connection</p>
+                <div class="input-group">
+                    <input type="text" id="room-input" placeholder="Enter Room Code" autocomplete="off">
+                </div>
+                <button id="join-btn" class="primary-btn">Join Room</button>
+                <div id="status-msg" class="status-msg"></div>
+            </div>
+        </div>
+
+        <!-- Chat Screen -->
+        <div id="chat-screen" class="screen">
+            <div class="chat-container glass-card">
+                <div class="chat-header">
+                    <h2>Room: <span id="room-display"></span></h2>
+                    <span id="connection-status" class="status-badge connecting">Connecting...</span>
+                </div>
+                <div id="chat-box" class="chat-box">
+                    <div class="system-msg">Waiting for peer to connect...</div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" id="message-input" placeholder="Type a message..." disabled autocomplete="off">
+                    <button id="send-btn" class="primary-btn" disabled>
+                        <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" class="css-i6dzq1"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
