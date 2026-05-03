@@ -1,0 +1,20 @@
+{
+  "name": "p2p-conn",
+  "version": "1.0.0",
+  "description": "P2P WebRTC Chat System",
+  "license": "ISC",
+  "author": "Koushik",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
