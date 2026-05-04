@@ -21,6 +21,12 @@ const voiceTimer = document.getElementById('voice-timer');
 const audioVisualizer = document.getElementById('audio-visualizer');
 const remoteAudio = document.getElementById('remote-audio');
 
+// Incoming call overlay DOM
+const incomingCallOverlay = document.getElementById('incoming-call-overlay');
+const ringCountdown = document.getElementById('ring-countdown');
+const acceptCallBtn = document.getElementById('accept-call-btn');
+const denyCallBtn = document.getElementById('deny-call-btn');
+
 // State
 let ws;
 let peerConnection;
@@ -38,6 +44,14 @@ let callStartTime = null;
 let audioContext = null;
 let analyser = null;
 let animFrameId = null;
+
+// Call signaling state
+// 'idle' | 'outgoing-ringing' | 'incoming-ringing' | 'active'
+let callState = 'idle';
+let ringTimeout = null;       // 30s auto-decline timer
+let ringCountdownInterval = null;
+let ringSecondsLeft = 30;
+const RING_DURATION_S = 30;
 
 // STUN Servers for WebRTC
 const rtcConfig = {
@@ -59,8 +73,10 @@ messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') sendMessage();
 });
 
-voiceCallBtn.addEventListener('click', toggleVoiceCall);
+voiceCallBtn.addEventListener('click', handleVoiceButtonClick);
 voiceMuteBtn.addEventListener('click', toggleMute);
+acceptCallBtn.addEventListener('click', acceptIncomingCall);
+denyCallBtn.addEventListener('click', denyIncomingCall);
 
 function appendSystemMessage(msg) {
     const div = document.createElement('div');
@@ -90,7 +106,6 @@ function joinRoom() {
     statusMsg.textContent = "";
 
     // Connect to WebSocket Signaling Server
-    // Use window.location.hostname to support both local testing and potential remote
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
     ws = new WebSocket(wsUrl);
@@ -124,7 +139,7 @@ function joinRoom() {
                 break;
             case 'peer-disconnected':
                 appendSystemMessage("Peer disconnected. Waiting for someone to join...");
-                endVoiceCall();
+                cleanupCall();
                 resetWebRTC();
                 break;
         }
@@ -136,7 +151,7 @@ function joinRoom() {
         joinBtn.textContent = "Join Room";
     };
 
-    // Assuming we switch UI immediately if no error
+    // Switch UI
     setTimeout(() => {
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
             joinScreen.classList.remove('active');
@@ -174,7 +189,7 @@ function startWebRTC(isInitiatorLocal) {
             messageInput.disabled = true;
             sendBtn.disabled = true;
             voiceCallBtn.disabled = true;
-            endVoiceCall();
+            cleanupCall();
         }
     };
 
@@ -186,7 +201,7 @@ function startWebRTC(isInitiatorLocal) {
 
     // Handle renegotiation (needed when audio tracks are added mid-session)
     peerConnection.onnegotiationneeded = async () => {
-        if (!isInitiator) return; // only initiator creates new offers
+        if (!isInitiator) return;
         try {
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
@@ -259,18 +274,36 @@ async function handleIceCandidate(candidate) {
     }
 }
 
+// ==================== Data Channel Setup ====================
+// Messages are now either plain text chat or JSON voice-signal objects.
+// We distinguish by attempting JSON parse; if it has a `__voice` field it's a signal.
+
 function setupDataChannel() {
     dataChannel.onopen = () => {
         console.log("Data Channel is open");
     };
 
     dataChannel.onmessage = (event) => {
-        appendMessage(event.data, 'received');
+        let parsed = null;
+        try {
+            parsed = JSON.parse(event.data);
+        } catch (_) { /* not JSON, treat as chat */ }
+
+        if (parsed && parsed.__voice) {
+            handleVoiceSignal(parsed);
+        } else {
+            appendMessage(event.data, 'received');
+        }
     };
 
     dataChannel.onclose = () => {
         console.log("Data Channel closed");
     };
+}
+
+function sendVoiceSignal(type) {
+    if (!dataChannel || dataChannel.readyState !== 'open') return;
+    dataChannel.send(JSON.stringify({ __voice: true, type }));
 }
 
 function resetWebRTC() {
@@ -298,46 +331,258 @@ function sendMessage() {
     messageInput.value = '';
 }
 
-// ==================== Voice Channel ====================
+// ==================== Voice Call Signaling ====================
+// Protocol over data channel:
+//   voice-request   — caller sends to callee
+//   voice-accept    — callee accepts
+//   voice-deny      — callee declines
+//   voice-end       — either side ends the call
+//   voice-timeout   — caller's ring expired (informational)
 
-async function toggleVoiceCall() {
-    if (isInCall) {
-        endVoiceCall();
-        appendSystemMessage("Voice call ended.");
-    } else {
-        await startVoiceCall();
+function handleVoiceSignal(signal) {
+    switch (signal.type) {
+        case 'voice-request':
+            onIncomingCallRequest();
+            break;
+        case 'voice-accept':
+            onCallAcceptedByPeer();
+            break;
+        case 'voice-deny':
+            onCallDeniedByPeer();
+            break;
+        case 'voice-end':
+            onPeerEndedCall();
+            break;
+        case 'voice-timeout':
+            // Peer's ring timed out — same as deny from our perspective
+            if (callState === 'incoming-ringing') {
+                clearRinging();
+                hideIncomingCallOverlay();
+                setVoiceBarIdle();
+                callState = 'idle';
+                appendSystemMessage("Call timed out.");
+            }
+            break;
     }
 }
 
-async function startVoiceCall() {
+// ---- Caller side ----
+
+function handleVoiceButtonClick() {
+    if (callState === 'idle') {
+        initiateCall();
+    } else if (callState === 'outgoing-ringing') {
+        cancelOutgoingCall();
+    } else if (callState === 'active') {
+        endActiveCall();
+    }
+}
+
+function initiateCall() {
     if (!peerConnection || peerConnection.connectionState !== 'connected') {
-        appendSystemMessage("Cannot start voice call — not connected to peer.");
+        appendSystemMessage("Cannot call — not connected to peer.");
         return;
     }
 
+    callState = 'outgoing-ringing';
+    sendVoiceSignal('voice-request');
+
+    // Update voice bar to "Calling..." state
+    voiceCallBtn.classList.add('active');
+    voiceCallLabel.textContent = 'Cancel';
+    voiceStatus.textContent = 'Calling...';
+    voiceStatus.className = 'voice-status ringing';
+
+    appendSystemMessage("Calling peer...");
+
+    // Start 30s ring timeout
+    startRingTimer(() => {
+        // Ring expired on caller side
+        sendVoiceSignal('voice-timeout');
+        callState = 'idle';
+        setVoiceBarIdle();
+        appendSystemMessage("No answer — call timed out.");
+    });
+}
+
+function cancelOutgoingCall() {
+    sendVoiceSignal('voice-deny'); // re-use deny to tell peer to stop ringing
+    clearRinging();
+    callState = 'idle';
+    setVoiceBarIdle();
+    appendSystemMessage("Call cancelled.");
+}
+
+function onCallAcceptedByPeer() {
+    if (callState !== 'outgoing-ringing') return;
+    clearRinging();
+    callState = 'active';
+    startDuplexAudio();
+    appendSystemMessage("Call connected!");
+}
+
+function onCallDeniedByPeer() {
+    if (callState !== 'outgoing-ringing') return;
+    clearRinging();
+    callState = 'idle';
+    setVoiceBarIdle();
+    appendSystemMessage("Call declined by peer.");
+}
+
+// ---- Callee side ----
+
+function onIncomingCallRequest() {
+    if (callState !== 'idle') {
+        // Already in a call or ringing — auto-deny
+        sendVoiceSignal('voice-deny');
+        return;
+    }
+
+    callState = 'incoming-ringing';
+    showIncomingCallOverlay();
+    appendSystemMessage("Incoming voice call...");
+
+    // Start 30s ring timeout (auto-deny)
+    startRingTimer(() => {
+        sendVoiceSignal('voice-deny');
+        hideIncomingCallOverlay();
+        callState = 'idle';
+        setVoiceBarIdle();
+        appendSystemMessage("Missed call — auto-declined after 30s.");
+    });
+}
+
+function acceptIncomingCall() {
+    if (callState !== 'incoming-ringing') return;
+    clearRinging();
+    hideIncomingCallOverlay();
+    callState = 'active';
+    sendVoiceSignal('voice-accept');
+    startDuplexAudio();
+    appendSystemMessage("Call connected!");
+}
+
+function denyIncomingCall() {
+    if (callState !== 'incoming-ringing') return;
+    clearRinging();
+    hideIncomingCallOverlay();
+    callState = 'idle';
+    setVoiceBarIdle();
+    sendVoiceSignal('voice-deny');
+    appendSystemMessage("Call declined.");
+}
+
+// ---- Shared call control ----
+
+function endActiveCall() {
+    sendVoiceSignal('voice-end');
+    teardownAudio();
+    callState = 'idle';
+    setVoiceBarIdle();
+    appendSystemMessage("Voice call ended.");
+}
+
+function onPeerEndedCall() {
+    if (callState === 'active') {
+        teardownAudio();
+        callState = 'idle';
+        setVoiceBarIdle();
+        appendSystemMessage("Peer ended the call.");
+    } else if (callState === 'outgoing-ringing') {
+        // Peer sent end while we were ringing (shouldn't normally happen, but handle)
+        clearRinging();
+        callState = 'idle';
+        setVoiceBarIdle();
+        appendSystemMessage("Peer ended the call.");
+    }
+}
+
+/**
+ * Full cleanup — called when peer disconnects or WebRTC drops.
+ * Handles any call state gracefully.
+ */
+function cleanupCall() {
+    clearRinging();
+    hideIncomingCallOverlay();
+    teardownAudio();
+    callState = 'idle';
+    setVoiceBarIdle();
+}
+
+// ==================== Ring Timer ====================
+
+function startRingTimer(onExpire) {
+    ringSecondsLeft = RING_DURATION_S;
+    updateRingCountdownDisplay();
+
+    ringCountdownInterval = setInterval(() => {
+        ringSecondsLeft--;
+        updateRingCountdownDisplay();
+    }, 1000);
+
+    ringTimeout = setTimeout(() => {
+        clearRinging();
+        onExpire();
+    }, RING_DURATION_S * 1000);
+}
+
+function clearRinging() {
+    if (ringTimeout) {
+        clearTimeout(ringTimeout);
+        ringTimeout = null;
+    }
+    if (ringCountdownInterval) {
+        clearInterval(ringCountdownInterval);
+        ringCountdownInterval = null;
+    }
+}
+
+function updateRingCountdownDisplay() {
+    ringCountdown.textContent = `${ringSecondsLeft}s`;
+}
+
+// ==================== Incoming Call Overlay ====================
+
+function showIncomingCallOverlay() {
+    incomingCallOverlay.style.display = 'flex';
+}
+
+function hideIncomingCallOverlay() {
+    incomingCallOverlay.style.display = 'none';
+}
+
+// ==================== Audio Track Management ====================
+
+/**
+ * Start full duplex audio: capture mic, add tracks to peer connection,
+ * and switch UI to active call state.
+ */
+async function startDuplexAudio() {
     try {
         localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
         console.error("Microphone access denied:", err);
-        appendSystemMessage("Microphone access denied. Please allow microphone permissions.");
-        return;
+        appendSystemMessage("Microphone access denied. Call connected but you cannot send audio.");
+        // Still allow the call to proceed (one-way audio from peer)
     }
 
-    // Add audio tracks to the peer connection
-    localStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, localStream);
-    });
+    // Add local audio tracks to peer connection
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+    }
 
     isInCall = true;
     isMuted = false;
 
-    // Update UI
+    // Update voice bar UI to active call
     voiceCallBtn.classList.add('active');
     voiceCallLabel.textContent = 'End';
     voiceMuteBtn.style.display = 'flex';
     voiceMuteBtn.disabled = false;
     voiceStatus.textContent = 'In call';
-    voiceStatus.classList.add('active');
+    voiceStatus.className = 'voice-status active';
     voiceTimer.style.display = 'block';
     audioVisualizer.style.display = 'flex';
 
@@ -347,14 +592,13 @@ async function startVoiceCall() {
 
     // Start audio visualizer
     startAudioVisualizer();
-
-    appendSystemMessage("Voice call started — speak freely!");
 }
 
-function endVoiceCall() {
-    if (!isInCall && !localStream) return;
-
-    // Stop all local audio tracks
+/**
+ * Tear down audio: stop mic, remove senders, reset UI.
+ */
+function teardownAudio() {
+    // Stop local audio tracks
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
@@ -373,7 +617,7 @@ function endVoiceCall() {
     // Stop visualizer
     stopAudioVisualizer();
 
-    // Stop timer
+    // Stop call timer
     if (callTimerInterval) {
         clearInterval(callTimerInterval);
         callTimerInterval = null;
@@ -382,7 +626,14 @@ function endVoiceCall() {
     isInCall = false;
     isMuted = false;
 
-    // Reset UI
+    // Clear remote audio
+    remoteAudio.srcObject = null;
+}
+
+/**
+ * Reset voice bar to idle visual state.
+ */
+function setVoiceBarIdle() {
     voiceCallBtn.classList.remove('active');
     voiceCallLabel.textContent = 'Voice';
     voiceMuteBtn.style.display = 'none';
@@ -391,14 +642,13 @@ function endVoiceCall() {
     micIcon.style.display = 'inline';
     micOffIcon.style.display = 'none';
     voiceStatus.textContent = 'Voice channel ready';
-    voiceStatus.classList.remove('active');
+    voiceStatus.className = 'voice-status';
     voiceTimer.style.display = 'none';
     voiceTimer.textContent = '00:00';
     audioVisualizer.style.display = 'none';
-
-    // Clear remote audio
-    remoteAudio.srcObject = null;
 }
+
+// ==================== Mute / Timer / Visualizer ====================
 
 function toggleMute() {
     if (!localStream) return;
@@ -448,7 +698,6 @@ function startAudioVisualizer() {
         function draw() {
             analyser.getByteFrequencyData(dataArray);
 
-            // Map frequency data to the 5 bars
             const step = Math.floor(dataArray.length / vizBars.length);
             vizBars.forEach((bar, i) => {
                 const value = dataArray[i * step] || 0;
