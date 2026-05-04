@@ -10,6 +10,17 @@ const chatBox = document.getElementById('chat-box');
 const messageInput = document.getElementById('message-input');
 const sendBtn = document.getElementById('send-btn');
 
+// Voice DOM Elements
+const voiceCallBtn = document.getElementById('voice-call-btn');
+const voiceCallLabel = document.getElementById('voice-call-label');
+const voiceMuteBtn = document.getElementById('voice-mute-btn');
+const micIcon = document.getElementById('mic-icon');
+const micOffIcon = document.getElementById('mic-off-icon');
+const voiceStatus = document.getElementById('voice-status');
+const voiceTimer = document.getElementById('voice-timer');
+const audioVisualizer = document.getElementById('audio-visualizer');
+const remoteAudio = document.getElementById('remote-audio');
+
 // State
 let ws;
 let peerConnection;
@@ -17,6 +28,16 @@ let dataChannel;
 let currentRoom = '';
 let isInitiator = false;
 let iceCandidatesQueue = [];
+
+// Voice state
+let localStream = null;
+let isMuted = false;
+let isInCall = false;
+let callTimerInterval = null;
+let callStartTime = null;
+let audioContext = null;
+let analyser = null;
+let animFrameId = null;
 
 // STUN Servers for WebRTC
 const rtcConfig = {
@@ -37,6 +58,9 @@ sendBtn.addEventListener('click', sendMessage);
 messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') sendMessage();
 });
+
+voiceCallBtn.addEventListener('click', toggleVoiceCall);
+voiceMuteBtn.addEventListener('click', toggleMute);
 
 function appendSystemMessage(msg) {
     const div = document.createElement('div');
@@ -100,6 +124,7 @@ function joinRoom() {
                 break;
             case 'peer-disconnected':
                 appendSystemMessage("Peer disconnected. Waiting for someone to join...");
+                endVoiceCall();
                 resetWebRTC();
                 break;
         }
@@ -141,12 +166,36 @@ function startWebRTC(isInitiatorLocal) {
             connectionStatus.className = "status-badge connected";
             messageInput.disabled = false;
             sendBtn.disabled = false;
+            voiceCallBtn.disabled = false;
             appendSystemMessage("Secure connection established.");
         } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
             connectionStatus.textContent = "Disconnected";
             connectionStatus.className = "status-badge disconnected";
             messageInput.disabled = true;
             sendBtn.disabled = true;
+            voiceCallBtn.disabled = true;
+            endVoiceCall();
+        }
+    };
+
+    // Handle incoming audio tracks from remote peer
+    peerConnection.ontrack = (event) => {
+        console.log("Received remote audio track");
+        remoteAudio.srcObject = event.streams[0];
+    };
+
+    // Handle renegotiation (needed when audio tracks are added mid-session)
+    peerConnection.onnegotiationneeded = async () => {
+        if (!isInitiator) return; // only initiator creates new offers
+        try {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            ws.send(JSON.stringify({
+                action: 'offer',
+                offer: peerConnection.localDescription
+            }));
+        } catch (err) {
+            console.error("Renegotiation failed:", err);
         }
     };
 
@@ -237,6 +286,7 @@ function resetWebRTC() {
     connectionStatus.className = "status-badge connecting";
     messageInput.disabled = true;
     sendBtn.disabled = true;
+    voiceCallBtn.disabled = true;
 }
 
 function sendMessage() {
@@ -246,4 +296,189 @@ function sendMessage() {
     dataChannel.send(msg);
     appendMessage(msg, 'sent');
     messageInput.value = '';
+}
+
+// ==================== Voice Channel ====================
+
+async function toggleVoiceCall() {
+    if (isInCall) {
+        endVoiceCall();
+        appendSystemMessage("Voice call ended.");
+    } else {
+        await startVoiceCall();
+    }
+}
+
+async function startVoiceCall() {
+    if (!peerConnection || peerConnection.connectionState !== 'connected') {
+        appendSystemMessage("Cannot start voice call — not connected to peer.");
+        return;
+    }
+
+    try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+        console.error("Microphone access denied:", err);
+        appendSystemMessage("Microphone access denied. Please allow microphone permissions.");
+        return;
+    }
+
+    // Add audio tracks to the peer connection
+    localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+    });
+
+    isInCall = true;
+    isMuted = false;
+
+    // Update UI
+    voiceCallBtn.classList.add('active');
+    voiceCallLabel.textContent = 'End';
+    voiceMuteBtn.style.display = 'flex';
+    voiceMuteBtn.disabled = false;
+    voiceStatus.textContent = 'In call';
+    voiceStatus.classList.add('active');
+    voiceTimer.style.display = 'block';
+    audioVisualizer.style.display = 'flex';
+
+    // Start call timer
+    callStartTime = Date.now();
+    callTimerInterval = setInterval(updateCallTimer, 1000);
+
+    // Start audio visualizer
+    startAudioVisualizer();
+
+    appendSystemMessage("Voice call started — speak freely!");
+}
+
+function endVoiceCall() {
+    if (!isInCall && !localStream) return;
+
+    // Stop all local audio tracks
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
+
+    // Remove audio senders from peer connection
+    if (peerConnection) {
+        const senders = peerConnection.getSenders();
+        senders.forEach(sender => {
+            if (sender.track && sender.track.kind === 'audio') {
+                peerConnection.removeTrack(sender);
+            }
+        });
+    }
+
+    // Stop visualizer
+    stopAudioVisualizer();
+
+    // Stop timer
+    if (callTimerInterval) {
+        clearInterval(callTimerInterval);
+        callTimerInterval = null;
+    }
+
+    isInCall = false;
+    isMuted = false;
+
+    // Reset UI
+    voiceCallBtn.classList.remove('active');
+    voiceCallLabel.textContent = 'Voice';
+    voiceMuteBtn.style.display = 'none';
+    voiceMuteBtn.disabled = true;
+    voiceMuteBtn.classList.remove('muted');
+    micIcon.style.display = 'inline';
+    micOffIcon.style.display = 'none';
+    voiceStatus.textContent = 'Voice channel ready';
+    voiceStatus.classList.remove('active');
+    voiceTimer.style.display = 'none';
+    voiceTimer.textContent = '00:00';
+    audioVisualizer.style.display = 'none';
+
+    // Clear remote audio
+    remoteAudio.srcObject = null;
+}
+
+function toggleMute() {
+    if (!localStream) return;
+
+    isMuted = !isMuted;
+    localStream.getAudioTracks().forEach(track => {
+        track.enabled = !isMuted;
+    });
+
+    if (isMuted) {
+        voiceMuteBtn.classList.add('muted');
+        micIcon.style.display = 'none';
+        micOffIcon.style.display = 'inline';
+        voiceMuteBtn.title = 'Unmute Microphone';
+    } else {
+        voiceMuteBtn.classList.remove('muted');
+        micIcon.style.display = 'inline';
+        micOffIcon.style.display = 'none';
+        voiceMuteBtn.title = 'Mute Microphone';
+    }
+}
+
+function updateCallTimer() {
+    if (!callStartTime) return;
+    const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+    const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+    const secs = String(elapsed % 60).padStart(2, '0');
+    voiceTimer.textContent = `${mins}:${secs}`;
+}
+
+// Audio Visualizer using Web Audio API
+function startAudioVisualizer() {
+    if (!localStream) return;
+
+    try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.8;
+
+        const source = audioContext.createMediaStreamSource(localStream);
+        source.connect(analyser);
+
+        const vizBars = audioVisualizer.querySelectorAll('.viz-bar');
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        function draw() {
+            analyser.getByteFrequencyData(dataArray);
+
+            // Map frequency data to the 5 bars
+            const step = Math.floor(dataArray.length / vizBars.length);
+            vizBars.forEach((bar, i) => {
+                const value = dataArray[i * step] || 0;
+                const height = Math.max(3, (value / 255) * 24);
+                bar.style.height = `${height}px`;
+            });
+
+            animFrameId = requestAnimationFrame(draw);
+        }
+
+        draw();
+    } catch (err) {
+        console.error("Audio visualizer error:", err);
+    }
+}
+
+function stopAudioVisualizer() {
+    if (animFrameId) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+    }
+    if (audioContext) {
+        audioContext.close().catch(() => {});
+        audioContext = null;
+        analyser = null;
+    }
+
+    // Reset bar heights
+    const vizBars = audioVisualizer.querySelectorAll('.viz-bar');
+    vizBars.forEach(bar => {
+        bar.style.height = '3px';
+    });
 }
