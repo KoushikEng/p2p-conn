@@ -363,6 +363,16 @@ function handleVoiceSignal(signal) {
                 appendSystemMessage("Call timed out.");
             }
             break;
+        case 'voice-cancel':
+            // Caller cancelled the outgoing call
+            if (callState === 'incoming-ringing') {
+                clearRinging();
+                hideIncomingCallOverlay();
+                setVoiceBarIdle();
+                callState = 'idle';
+                appendSystemMessage("Call cancelled by peer.");
+            }
+            break;
     }
 }
 
@@ -406,7 +416,7 @@ function initiateCall() {
 }
 
 function cancelOutgoingCall() {
-    sendVoiceSignal('voice-deny'); // re-use deny to tell peer to stop ringing
+    sendVoiceSignal('voice-cancel');
     clearRinging();
     callState = 'idle';
     setVoiceBarIdle();
