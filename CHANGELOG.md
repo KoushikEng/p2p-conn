@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-05-04] - Code Modularization
+### Refactored
+- **Frontend JavaScript**: Split the monolithic `app.js` into modular ES modules (`dom.js`, `state.js`, `ui.js`, `webrtc.js`, `voice.js`, and `app.js`) to improve code organization and maintainability.
+- **HTML Script Loading**: Updated `index.html` to load the new main entry point using `<script type="module">`.
+
 ## [2026-05-04] - Fixes & Environment Updates
 ### Fixed
 - **Voice Call Cancellation**: Fixed a bug where a caller cancelling an outgoing call would not dismiss the incoming call overlay on the receiver's screen. Introduced a `voice-cancel` signal to properly handle this state.

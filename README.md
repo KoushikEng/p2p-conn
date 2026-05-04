@@ -14,7 +14,12 @@ P2P_conn/
 ├── public/                  # Static assets served to the browser
 │   ├── index.html           # Main UI (glass‑morphic premium design)
 │   ├── style.css           # Styles for the UI
-│   └── app.js              # Client‑side JavaScript (WebRTC + signalling)
+│   ├── app.js              # Main entry point (WebSocket setup)
+│   ├── dom.js              # DOM element references
+│   ├── state.js            # Global application state and constants
+│   ├── ui.js               # UI manipulation functions
+│   ├── webrtc.js           # WebRTC and Data Channel handling
+│   └── voice.js            # Voice calling and audio visualization
 ```
 
 - **`server.js`** – Starts an HTTP server using `express` and a WebSocket server using `ws`. It:
@@ -23,11 +28,11 @@ P2P_conn/
   3. Manages rooms (max two peers) and relays SDP/ICE messages between them.
 - **`public/index.html`** – Simple HTML skeleton that loads `style.css` and `app.js`. The UI is styled with a modern glass‑morphism look, includes a room‑code input, text chat area, and voice calling overlay.
 - **`public/style.css`** – Premium CSS using custom colour palettes, subtle gradients, hover animations, and incoming call ring animations.
-- **`public/app.js`** – Front‑end logic:
-  - Connects to the signalling endpoint (`ws://<host>:8000/ws`).
-  - Handles the **join**, **offer**, **answer**, and **ice‑candidate** messages.
-  - Sets up a `RTCPeerConnection` and creates a data channel for chat and call signaling.
-  - Implements a complete voice calling state machine (request, accept, deny, timeout) and adds audio tracks for duplex communication.
+- **`public/app.js`** and related modules – Front‑end logic is now modularised:
+  - **`app.js`** acts as the main entry point, setting up WebSocket signaling (`ws://<host>:8000/ws`) and event listeners.
+  - **`webrtc.js`** manages the `RTCPeerConnection`, data channels, and ICE candidates.
+  - **`voice.js`** implements the voice calling state machine (request, accept, deny, timeout), handles media streams, and manages the audio visualizer.
+  - **`ui.js`**, **`dom.js`**, and **`state.js`** handle interface updates, DOM caching, and global state management.
 
 ---
 
