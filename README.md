@@ -14,19 +14,25 @@ P2P_conn/
 ├── public/                  # Static assets served to the browser
 │   ├── index.html           # Main UI (glass‑morphic premium design)
 │   ├── style.css           # Styles for the UI
-│   └── app.js              # Client‑side JavaScript (WebRTC + signalling)
+│   ├── app.js              # Main entry point (WebSocket setup)
+│   ├── dom.js              # DOM element references
+│   ├── state.js            # Global application state and constants
+│   ├── ui.js               # UI manipulation functions
+│   ├── webrtc.js           # WebRTC and Data Channel handling
+│   └── voice.js            # Voice calling and audio visualization
 ```
 
 - **`server.js`** – Starts an HTTP server using `express` and a WebSocket server using `ws`. It:
   1. Serves files from the `public/` directory for any normal HTTP request via Express.
   2. Upgrades requests to `/ws` to a WebSocket connection for signalling.
   3. Manages rooms (max two peers) and relays SDP/ICE messages between them.
-- **`public/index.html`** – Simple HTML skeleton that loads `style.css` and `app.js`. The UI is styled with a modern glass‑morphism look and includes a room‑code input.
-- **`public/style.css`** – Premium CSS using custom colour palettes, subtle gradients and hover animations.
-- **`public/app.js`** – Front‑end logic:
-  - Connects to the signalling endpoint (`ws://<host>:8000/ws`).
-  - Handles the **join**, **offer**, **answer**, and **ice‑candidate** messages.
-  - Sets up a `RTCPeerConnection`, creates a data channel, and displays chat messages.
+- **`public/index.html`** – Simple HTML skeleton that loads `style.css` and `app.js`. The UI is styled with a modern glass‑morphism look, includes a room‑code input, text chat area, and voice calling overlay.
+- **`public/style.css`** – Premium CSS using custom colour palettes, subtle gradients, hover animations, and incoming call ring animations.
+- **`public/app.js`** and related modules – Front‑end logic is now modularised:
+  - **`app.js`** acts as the main entry point, setting up WebSocket signaling (`ws://<host>:8000/ws`) and event listeners.
+  - **`webrtc.js`** manages the `RTCPeerConnection`, data channels, and ICE candidates.
+  - **`voice.js`** implements the voice calling state machine (request, accept, deny, timeout), handles media streams, and manages the audio visualizer.
+  - **`ui.js`**, **`dom.js`**, and **`state.js`** handle interface updates, DOM caching, and global state management.
 
 ---
 
@@ -66,6 +72,7 @@ Server listening on http://0.0.0.0:8000 (and ws://0.0.0.0:8000/ws)
 - Open a browser and navigate to **`http://127.0.0.1:8000`** (or the host's IP if you want to connect from another device on the same network).
 - Enter a **room code** (any string, e.g., `room1`). The first participant will see "Waiting for peer…"; the second participant will see "Ready – you can start chatting".
 - Type messages in the input box; they are sent over the WebRTC data channel directly between peers.
+- Click the **Voice** button to initiate a voice call. The receiver will get an incoming call overlay and has 30 seconds to accept or deny before it times out. Audio is only transmitted after the receiver accepts.
 
 To stop the server, press **`Ctrl‑C`** in the terminal.
 
@@ -79,7 +86,8 @@ To stop the server, press **`Ctrl‑C`** in the terminal.
    - After receiving a `ready` signal, the first peer creates an **offer**, sends it via the signalling channel, and sets up a data channel.
    - The second peer receives the offer, creates an **answer**, and sends it back.
    - Both peers exchange ICE candidates until the connection is established.
-   - Once the `datachannel` is open, chat messages are sent directly between browsers; the server is no longer involved.
+   - Once the `datachannel` is open, chat messages and call signaling (`voice-request`, `voice-accept`, etc.) are sent directly between browsers; the server is no longer involved.
+   - For voice calls, local media streams are obtained using `getUserMedia`, and audio tracks are dynamically added to the existing `RTCPeerConnection`, triggering renegotiation.
 
 ---
 
